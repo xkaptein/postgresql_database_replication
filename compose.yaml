@@ -1,0 +1,176 @@
+
+services:
+  postgres-primary:
+    image: docker.io/library/postgres:${POSTGRES_VERSION}
+    container_name: postgres-primary
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+      TZ: ${TZ}
+      PGTZ: ${TZ}
+
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - wal_keep_size=512MB
+      - -c
+      - hot_standby=on
+      - -c
+      - listen_addresses=*
+
+    ports:
+      - "${POSTGRES_PRIMARY_PORT}:5432"
+
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql
+      - ./scripts/primary/init-primary.sh:/docker-entrypoint-initdb.d/01-init-primary.sh:ro
+
+    networks:
+      - postgres-network
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  postgres-replica:
+    image: docker.io/library/postgres:${POSTGRES_VERSION}
+    container_name: postgres-replica
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+      POSTGRES_PRIMARY_HOST: postgres-primary
+      POSTGRES_PRIMARY_PORT: 5432
+      TZ: ${TZ}
+      PGTZ: ${TZ}
+
+    entrypoint:
+      - /bin/bash
+      - /scripts/init-replica.sh
+
+    ports:
+      - "${POSTGRES_REPLICA_PORT}:5432"
+
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql
+      - ./scripts/replica/init-replica.sh:/scripts/init-replica.sh:ro
+
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+
+    networks:
+      - postgres-network
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  pgbouncer-primary:
+    image: docker.io/edoburu/pgbouncer:${PGBOUNCER_VERSION}
+    container_name: pgbouncer-primary
+    restart: unless-stopped
+
+    environment:
+      DB_HOST: postgres-primary
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: ${PGBOUNCER_POOL_MODE}
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE}
+      ADMIN_USERS: ${POSTGRES_USER}
+      TZ: ${TZ}
+
+    ports:
+      - "${PGBOUNCER_PORT}:5432"
+
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+
+    networks:
+      - postgres-network
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -p 5432
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  pgbouncer-replica:
+    image: docker.io/edoburu/pgbouncer:${PGBOUNCER_VERSION}
+    container_name: pgbouncer-replica
+    restart: unless-stopped
+
+    environment:
+      DB_HOST: postgres-replica
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: ${PGBOUNCER_POOL_MODE}
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE}
+      ADMIN_USERS: ${POSTGRES_USER}
+      TZ: ${TZ}
+
+    ports:
+      - "${PGBOUNCER_REPLICA_PORT}:5432"
+
+    depends_on:
+      postgres-replica:
+        condition: service_healthy
+
+    networks:
+      - postgres-network
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -p 5432
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+networks:
+  postgres-network:
+    driver: bridge
+
+volumes:
+  postgres_primary_data:
+    name: postgres_primary_data
+
+  postgres_replica_data:
+    name: postgres_replica_data
